@@ -148,42 +148,63 @@ PYEOF
 
   # Run rename via PTY and verify it succeeded
   # $1=sid, $2=name, rest=extra flags
+  __claude_check_rename() {
+    local output="$1" sid="$2"
+    # Check PTY output for success/failure
+    local clean=$(echo "$output" | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' 2>/dev/null)
+    if echo "$clean" | grep -qi "Unknown skill"; then
+      __claude_debug "rename: FAILED — 'Unknown skill' in output"
+      return 1
+    fi
+    if echo "$clean" | grep -qi "renamed\|Renamed"; then
+      __claude_debug "rename: SUCCESS — confirmed in output"
+      return 0
+    fi
+    # Check the transcript file
+    local encoded_path=$(echo "$(pwd)" | tr '/' '-')
+    local transcript="$HOME/.claude/projects/${encoded_path}/${sid}.jsonl"
+    if [[ -f "$transcript" ]]; then
+      local tail_content=$(tail -10 "$transcript" 2>/dev/null)
+      if echo "$tail_content" | grep -q "Unknown skill.*rename"; then
+        __claude_debug "rename: FAILED — 'Unknown skill' in transcript"
+        return 1
+      fi
+      if echo "$tail_content" | grep -q "command-name./rename"; then
+        __claude_debug "rename: SUCCESS — confirmed in transcript"
+        return 0
+      fi
+    fi
+    # Could not verify — return 2 (indeterminate)
+    __claude_debug "rename: INDETERMINATE — no confirmation found"
+    return 2
+  }
+
   __claude_rename() {
     local sid="$1" name="$2"
     shift 2
     __claude_debug "rename: resume $sid, name=$name, flags=$*"
-    local output
-    output=$(__claude_pty_cmd 8 --resume "$sid" "$@" "/rename $name" 2>/dev/null)
-    __claude_debug "rename output: $(echo "$output" | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' 2>/dev/null)"
 
-    # Check for failure indicators in the captured PTY output
-    local clean=$(echo "$output" | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' 2>/dev/null)
-    if echo "$clean" | grep -qi "Unknown skill"; then
-      __claude_debug "rename: FAILED — 'Unknown skill' found in output"
-      return 1
-    fi
-    if echo "$clean" | grep -qi "renamed\|Renamed"; then
-      __claude_debug "rename: SUCCESS — rename confirmation found"
-      return 0
-    fi
-    # Also check the transcript file for the rename event
-    local encoded_path=$(echo "$(pwd)" | tr '/' '-')
-    local transcript="$HOME/.claude/projects/${encoded_path}/${sid}.jsonl"
-    if [[ -f "$transcript" ]]; then
-      # Look at the last 10 lines for the rename command result
-      local tail_content=$(tail -10 "$transcript" 2>/dev/null)
-      if echo "$tail_content" | grep -q "Unknown skill.*rename"; then
-        __claude_debug "rename: FAILED — 'Unknown skill' found in transcript"
-        return 1
-      fi
-      if echo "$tail_content" | grep -q "command-name./rename"; then
-        __claude_debug "rename: SUCCESS — /rename recognized as command in transcript"
-        return 0
-      fi
-    fi
-    # If we can't determine either way, assume success (PTY should make it work)
-    __claude_debug "rename: ASSUMED SUCCESS — no failure indicators found"
-    return 0
+    # Attempt 1
+    local output
+    output=$(__claude_pty_cmd 12 --resume "$sid" "$@" "/rename $name" 2>/dev/null)
+    __claude_debug "rename output: $(echo "$output" | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' 2>/dev/null)"
+    __claude_check_rename "$output" "$sid"
+    local rc=$?
+    [[ $rc -eq 0 ]] && return 0
+    [[ $rc -eq 1 ]] && return 1
+
+    # Attempt 2 (indeterminate result — retry once)
+    __claude_debug "rename: retrying..."
+    sleep 1
+    output=$(__claude_pty_cmd 15 --resume "$sid" "$@" "/rename $name" 2>/dev/null)
+    __claude_debug "rename retry output: $(echo "$output" | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' 2>/dev/null)"
+    __claude_check_rename "$output" "$sid"
+    rc=$?
+    [[ $rc -eq 0 ]] && return 0
+
+    # Both attempts failed or indeterminate
+    __claude_debug "rename: FAILED after retry"
+    return 1
   }
 
   # In-directory variant of rename for worktree
@@ -191,17 +212,27 @@ PYEOF
     local dir="$1" sid="$2" name="$3"
     shift 3
     __claude_debug "rename_in ($dir): resume $sid, name=$name, flags=$*"
-    local output
-    output=$(cd "$dir" && __claude_pty_cmd 8 --resume "$sid" "$@" "/rename $name" 2>/dev/null)
-    __claude_debug "rename_in output: $(echo "$output" | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' 2>/dev/null)"
 
-    local clean=$(echo "$output" | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' 2>/dev/null)
-    if echo "$clean" | grep -qi "Unknown skill"; then
-      __claude_debug "rename_in: FAILED"
-      return 1
-    fi
-    __claude_debug "rename_in: ASSUMED SUCCESS"
-    return 0
+    # Attempt 1
+    local output
+    output=$(cd "$dir" && __claude_pty_cmd 12 --resume "$sid" "$@" "/rename $name" 2>/dev/null)
+    __claude_debug "rename_in output: $(echo "$output" | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' 2>/dev/null)"
+    (cd "$dir" && __claude_check_rename "$output" "$sid")
+    local rc=$?
+    [[ $rc -eq 0 ]] && return 0
+    [[ $rc -eq 1 ]] && return 1
+
+    # Attempt 2
+    __claude_debug "rename_in: retrying..."
+    sleep 1
+    output=$(cd "$dir" && __claude_pty_cmd 15 --resume "$sid" "$@" "/rename $name" 2>/dev/null)
+    __claude_debug "rename_in retry output: $(echo "$output" | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' 2>/dev/null)"
+    (cd "$dir" && __claude_check_rename "$output" "$sid")
+    rc=$?
+    [[ $rc -eq 0 ]] && return 0
+
+    __claude_debug "rename_in: FAILED after retry"
+    return 1
   }
 
   __claude_save_mapping() {
@@ -779,6 +810,7 @@ if any(e['name'] == sys.argv[1] for e in data):
     __claude_spin "Forking session from '$resume_value'..."
     "$CLAUDE_BIN" -p --resume "$resume_value" --fork-session --session-id "$sid" "${claude_flags[@]}" "hi" > /dev/null 2>&1
     __claude_spin_ok "Forked session from '$resume_value'"
+    sleep 1
 
     __claude_spin "Naming session '$name'..."
     if __claude_rename "$sid" "$name" "${claude_flags[@]}"; then
@@ -824,6 +856,7 @@ if any(e['name'] == sys.argv[1] for e in data):
     __claude_spin "Seeding session..."
     (cd "$abs_wt_dir" && "$CLAUDE_BIN" -p --session-id "$sid" "${claude_flags[@]}" "$seed_message") > /dev/null 2>&1
     __claude_spin_ok "Session seeded"
+    sleep 1
 
     __claude_spin "Naming session '$name'..."
     if __claude_rename_in "$abs_wt_dir" "$sid" "$name" "${claude_flags[@]}"; then
@@ -895,6 +928,7 @@ with open(sys.argv[6], 'w') as f:
   __claude_spin "Seeding session..."
   "$CLAUDE_BIN" -p --session-id "$sid" "${claude_flags[@]}" "$seed_message" > /dev/null 2>&1
   __claude_spin_ok "Session seeded"
+  sleep 1
 
   __claude_spin "Naming session '$name'..."
   if __claude_rename "$sid" "$name" "${claude_flags[@]}"; then
