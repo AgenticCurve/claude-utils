@@ -208,34 +208,6 @@ PYEOF
     return 1
   }
 
-  # Rename an existing session (used for fork path where session already exists).
-  # $1=sid, $2=name, rest=extra claude flags
-  __claude_rename() {
-    local sid="$1" name="$2"
-    shift 2
-    __claude_debug "rename: resume $sid, name=$name, flags=$*"
-
-    local output
-    output=$(__claude_pty_cmd 12 --resume "$sid" "$@" "/rename $name" 2>/dev/null)
-    __claude_debug "rename output: $(echo "$output" | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' 2>/dev/null)"
-    __claude_check_rename "$output" "$sid"
-    local rc=$?
-    [[ $rc -eq 0 ]] && return 0
-    [[ $rc -eq 1 ]] && return 1
-
-    # Retry
-    __claude_debug "rename: retrying..."
-    sleep 1
-    output=$(__claude_pty_cmd 15 --resume "$sid" "$@" "/rename $name" 2>/dev/null)
-    __claude_debug "rename retry output: $(echo "$output" | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' 2>/dev/null)"
-    __claude_check_rename "$output" "$sid"
-    rc=$?
-    [[ $rc -eq 0 ]] && return 0
-
-    __claude_debug "rename: FAILED after retry"
-    return 1
-  }
-
   # In-directory variant: create + rename for worktree
   __claude_create_and_rename_in() {
     local dir="$1" sid="$2" name="$3"
@@ -867,17 +839,27 @@ if any(e['name'] == sys.argv[1] for e in data):
       return 1
     fi
 
-    __claude_spin "Forking session from '$resume_value'..."
-    "$CLAUDE_BIN" -p --resume "$resume_value" --fork-session --session-id "$sid" "${claude_flags[@]}" "." > /dev/null 2>&1
-    __claude_spin_ok "Forked session from '$resume_value'"
-
-    __claude_spin "Naming session '$name'..."
-    if __claude_rename "$sid" "$name" "${claude_flags[@]}"; then
-      __claude_spin_ok "Session named '$name'"
+    __claude_spin "Forking and naming session '$name'..."
+    local output
+    output=$(__claude_pty_cmd 15 --resume "$resume_value" --fork-session --session-id "$sid" "${claude_flags[@]}" "/rename $name" 2>/dev/null)
+    __claude_debug "fork+rename output: $(echo "$output" | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' 2>/dev/null)"
+    __claude_check_rename "$output" "$sid"
+    local rc=$?
+    if [[ $rc -eq 0 ]]; then
+      __claude_spin_ok "Session '$name' ready (forked from '$resume_value')"
     else
-      __claude_spin_fail "Failed to rename session to '$name'"
-      echo "Error: rename failed. Resume manually: claude --resume $sid" >&2
-      return 1
+      # Retry
+      sleep 1
+      output=$(__claude_pty_cmd 15 --resume "$sid" "${claude_flags[@]}" "/rename $name" 2>/dev/null)
+      __claude_check_rename "$output" "$sid"
+      rc=$?
+      if [[ $rc -eq 0 ]]; then
+        __claude_spin_ok "Session '$name' ready (forked from '$resume_value')"
+      else
+        __claude_spin_fail "Failed to fork and rename session '$name'"
+        echo "Error: fork+rename failed. Resume manually: claude --resume $sid" >&2
+        return 1
+      fi
     fi
 
     __claude_save_mapping "$name" "$sid" "$description" "forked from $resume_value"
