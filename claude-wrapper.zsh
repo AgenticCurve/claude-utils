@@ -261,6 +261,51 @@ with open(sys.argv[6], 'w') as f:
     ln -sf "$transcript" "._claude/projects/${name}.jsonl"
   }
 
+  # Surgically clean a transcript .jsonl file after session setup.
+  # Removes setup noise (queue-operation, user, assistant messages) while
+  # keeping structural entries (file-history-snapshot, custom-title) that
+  # claude needs to recognize and resume the session.
+  __claude_clean_transcript() {
+    local transcript="$1"
+    [[ ! -f "$transcript" ]] && return 0
+    __claude_debug "clean_transcript: $transcript"
+    python3 -c "
+import json, sys
+
+path = sys.argv[1]
+keep_types = {'file-history-snapshot', 'custom-title'}
+
+with open(path, 'r') as f:
+    lines = f.readlines()
+
+kept = []
+for line in lines:
+    line = line.rstrip('\n')
+    if not line:
+        continue
+    try:
+        entry = json.loads(line)
+        if entry.get('type') in keep_types:
+            kept.append(line)
+    except (json.JSONDecodeError, KeyError):
+        # Keep unparseable lines to be safe
+        kept.append(line)
+
+# Safety: never produce an empty transcript (claude can't resume empty files)
+if not kept:
+    print('No structural entries found, keeping original transcript', file=sys.stderr)
+    sys.exit(0)
+
+with open(path, 'w') as f:
+    for line in kept:
+        f.write(line + '\n')
+
+removed = len(lines) - len(kept)
+print(f'Kept {len(kept)}, removed {removed}', file=sys.stderr)
+" "$transcript" 2>/dev/null
+    __claude_debug "clean_transcript: done"
+  }
+
   # --- Arg parsing ---
   # We separate args into:
   #   claude_flags: flags that ALL claude invocations need (--dangerously-skip-permissions, --model, etc.)
@@ -661,10 +706,10 @@ if any(e['name'] == sys.argv[1] for e in data):
     __claude_slash "$sid" "/clear" "${claude_flags[@]}"
     __claude_spin_ok "Context cleared"
 
-    # Truncate transcript to remove seed/rename/clear setup artifacts
+    # Surgically remove setup messages from transcript
     local encoded_path=$(echo "$(pwd)" | tr '/' '-')
     local transcript="$HOME/.claude/projects/${encoded_path}/${sid}.jsonl"
-    [[ -f "$transcript" ]] && : > "$transcript"
+    __claude_clean_transcript "$transcript"
 
     __claude_save_mapping "$name" "$sid" "$description" "forked from $resume_value"
     echo ""
@@ -715,10 +760,10 @@ if any(e['name'] == sys.argv[1] for e in data):
     __claude_slash_in "$abs_wt_dir" "$sid" "/clear" "${claude_flags[@]}"
     __claude_spin_ok "Context cleared"
 
-    # Truncate transcript to remove seed/rename/clear setup artifacts
-    local wt_encoded_tmp=$(echo "$abs_wt_dir" | tr '/' '-')
-    local wt_transcript_tmp="$HOME/.claude/projects/${wt_encoded_tmp}/${sid}.jsonl"
-    [[ -f "$wt_transcript_tmp" ]] && : > "$wt_transcript_tmp"
+    # Surgically remove setup messages from transcript
+    local wt_enc=$(echo "$abs_wt_dir" | tr '/' '-')
+    local wt_trans="$HOME/.claude/projects/${wt_enc}/${sid}.jsonl"
+    __claude_clean_transcript "$wt_trans"
 
     # Save mapping in worktree dir
     mkdir -p "$abs_wt_dir/._claude/projects"
@@ -795,10 +840,10 @@ with open(sys.argv[6], 'w') as f:
   __claude_slash "$sid" "/clear" "${claude_flags[@]}"
   __claude_spin_ok "Context cleared"
 
-  # Truncate transcript to remove seed/rename/clear setup artifacts
+  # Surgically remove setup messages from transcript, keeping structural entries
   local encoded_path=$(echo "$(pwd)" | tr '/' '-')
   local transcript="$HOME/.claude/projects/${encoded_path}/${sid}.jsonl"
-  [[ -f "$transcript" ]] && : > "$transcript"
+  __claude_clean_transcript "$transcript"
 
   __claude_save_mapping "$name" "$sid" "$description"
   echo ""
