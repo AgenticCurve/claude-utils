@@ -436,11 +436,33 @@ with open(sys.argv[6], 'w') as f:
         claude_flags+=("$1")
         shift
         ;;
+      # Subcommands — pass through immediately to claude
+      auth|doctor|install|mcp|plugin|setup-token|update|upgrade)
+        "$CLAUDE_BIN" "$@"
+        return $?
+        ;;
       *)
-        # Check if it's a known flag with value
-        if [[ -n "${flags_with_value[$1]}" ]]; then
-          claude_flags+=("$1" "$2")
-          shift 2
+        # Handle --flag=value syntax for known flags
+        if [[ "$1" == --*=* ]]; then
+          local flag_part="${1%%=*}"
+          local val_part="${1#*=}"
+          if [[ -n "${flags_with_value[$flag_part]}" ]]; then
+            claude_flags+=("$flag_part" "$val_part")
+          elif [[ -n "${flags_boolean[$flag_part]}" ]]; then
+            # Boolean flags don't take values, but pass as-is
+            claude_flags+=("$1")
+          else
+            user_prompt+=("$1")
+          fi
+          shift
+        # Check if it's a known flag with value (repeatable: consume all values)
+        elif [[ -n "${flags_with_value[$1]}" ]]; then
+          local flag="$1"
+          shift
+          while [[ $# -gt 0 && ! "$1" =~ ^- ]]; do
+            claude_flags+=("$flag" "$1")
+            shift
+          done
         elif [[ -n "${flags_boolean[$1]}" ]]; then
           claude_flags+=("$1")
           shift
