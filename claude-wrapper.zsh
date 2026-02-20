@@ -467,7 +467,7 @@ with open(sys.argv[2], 'w') as f:
         [[ -n "$del_subagent_dir" && -d "$del_subagent_dir" ]] && rm -rf "$del_subagent_dir"
 
         # 4. Todos
-        rm -f "$claude_dir"/todos/${del_sid}-agent-*.json
+        rm -f "$claude_dir"/todos/${del_sid}-agent-*.json 2>/dev/null
 
         # 5. Debug log
         rm -f "$claude_dir/debug/${del_sid}.txt"
@@ -482,7 +482,7 @@ with open(sys.argv[2], 'w') as f:
         [[ -d "$claude_dir/tasks/${del_sid}" ]] && rm -rf "$claude_dir/tasks/${del_sid}"
 
         # 9. Telemetry failed events
-        rm -f "$claude_dir"/telemetry/1p_failed_events.${del_sid}.*.json
+        rm -f "$claude_dir"/telemetry/1p_failed_events.${del_sid}.*.json 2>/dev/null
 
         # 10. Remove entries from history.jsonl (in-place, preserve other sessions)
         if [[ -f "$claude_dir/history.jsonl" ]]; then
@@ -616,12 +616,12 @@ sys.exit(1)
     [[ -f "$temp_transcript" ]] && rm -f "$temp_transcript"
     local temp_subagent="${temp_transcript%.jsonl}"
     [[ -d "$temp_subagent" ]] && rm -rf "$temp_subagent"
-    rm -f "$claude_dir"/todos/${temp_sid}-agent-*.json
+    rm -f "$claude_dir"/todos/${temp_sid}-agent-*.json 2>/dev/null
     rm -f "$claude_dir/debug/${temp_sid}.txt"
     [[ -d "$claude_dir/file-history/${temp_sid}" ]] && rm -rf "$claude_dir/file-history/${temp_sid}"
     [[ -d "$claude_dir/session-env/${temp_sid}" ]] && rm -rf "$claude_dir/session-env/${temp_sid}"
     [[ -d "$claude_dir/tasks/${temp_sid}" ]] && rm -rf "$claude_dir/tasks/${temp_sid}"
-    rm -f "$claude_dir"/telemetry/1p_failed_events.${temp_sid}.*.json
+    rm -f "$claude_dir"/telemetry/1p_failed_events.${temp_sid}.*.json 2>/dev/null
     # Remove from history.jsonl
     if [[ -f "$claude_dir/history.jsonl" ]]; then
       python3 -c "
