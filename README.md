@@ -30,8 +30,8 @@ claude --sessions --delete my-feature
 
 ## Features
 
-- **`--name <name>`** — Create a named session. Automatically seeds with the description, renames (via PTY), and launches. The description becomes the first message in the conversation.
-- **`--description <text>`** — Provide initial context when creating a named session (requires `--name`). Saved in the session mapping and used as the seed message.
+- **`--name <name>`** — Create a named session. Creates a session with a known UUID, renames it via PTY, and launches it. The session starts completely clean with no setup artifacts.
+- **`--description <text>`** — Metadata tag for the session (requires `--name`). Saved in the session mapping for reference only — not sent to claude.
 - **`--sessions`** — List all named sessions in the current directory, sorted by last modified (most recent first). Shows IDs, descriptions, created/modified timestamps, and transcript paths.
 - **`--sessions --with-summary`** — Same as `--sessions` but also displays session summaries (if generated).
 - **`--sessions --delete <name>`** — Full cleanup: removes the transcript, debug logs, todos, file history, session env, tasks, telemetry, and history entries from `~/.claude/`.
@@ -204,11 +204,10 @@ CLAUDE_WRAPPER_DEBUG=1 claude --name test --description "debugging"
 
 When you run `claude --name my-session --description "context"`:
 
-1. **Seed** — `claude -p --session-id <uuid> "context"` creates the session with a known UUID. The description becomes the first message in the conversation.
-2. **Rename** — A Python PTY spawns `claude --resume <uuid> "/rename my-session"` in a pseudo-terminal (required because slash commands only work in interactive mode with a TTY)
-3. **Launch** — `claude --resume <uuid>` opens the session for real use
+1. **Create + Rename** — A Python PTY spawns `claude --session-id <uuid> "/rename my-session"` in a pseudo-terminal. This creates the session with a known UUID and renames it in a single step. The description is saved as metadata only — it is not sent to claude.
+2. **Launch** — `claude --resume <uuid>` opens the session for real use. Any user prompt or `-p` flag is passed through unchanged.
 
-The PTY approach was necessary because Claude Code's `/rename` slash command only works in interactive mode with a connected terminal. Without a TTY, it fails with "Unknown skill". Python's `pty.fork()` creates a proper pseudo-terminal that makes claude believe it's running interactively.
+The PTY approach is necessary because Claude Code's `/rename` slash command only works in interactive mode with a connected terminal. Without a TTY, it fails with "Unknown skill". Python's `pty.fork()` creates a proper pseudo-terminal that makes claude believe it's running interactively.
 
 ## Session Data
 

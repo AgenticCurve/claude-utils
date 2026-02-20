@@ -179,12 +179,42 @@ PYEOF
     return 2
   }
 
+  # Create a new session and rename it in one PTY step.
+  # $1=sid, $2=name, rest=extra claude flags
+  __claude_create_and_rename() {
+    local sid="$1" name="$2"
+    shift 2
+    __claude_debug "create_and_rename: sid=$sid, name=$name, flags=$*"
+
+    # Attempt 1: create session + rename in one shot
+    local output
+    output=$(__claude_pty_cmd 12 --session-id "$sid" "$@" "/rename $name" 2>/dev/null)
+    __claude_debug "create_and_rename output: $(echo "$output" | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' 2>/dev/null)"
+    __claude_check_rename "$output" "$sid"
+    local rc=$?
+    [[ $rc -eq 0 ]] && return 0
+    [[ $rc -eq 1 ]] && return 1
+
+    # Attempt 2 (indeterminate — retry via resume since session now exists)
+    __claude_debug "create_and_rename: retrying via resume..."
+    sleep 1
+    output=$(__claude_pty_cmd 15 --resume "$sid" "$@" "/rename $name" 2>/dev/null)
+    __claude_debug "create_and_rename retry output: $(echo "$output" | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' 2>/dev/null)"
+    __claude_check_rename "$output" "$sid"
+    rc=$?
+    [[ $rc -eq 0 ]] && return 0
+
+    __claude_debug "create_and_rename: FAILED after retry"
+    return 1
+  }
+
+  # Rename an existing session (used for fork path where session already exists).
+  # $1=sid, $2=name, rest=extra claude flags
   __claude_rename() {
     local sid="$1" name="$2"
     shift 2
     __claude_debug "rename: resume $sid, name=$name, flags=$*"
 
-    # Attempt 1
     local output
     output=$(__claude_pty_cmd 12 --resume "$sid" "$@" "/rename $name" 2>/dev/null)
     __claude_debug "rename output: $(echo "$output" | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' 2>/dev/null)"
@@ -193,7 +223,7 @@ PYEOF
     [[ $rc -eq 0 ]] && return 0
     [[ $rc -eq 1 ]] && return 1
 
-    # Attempt 2 (indeterminate result — retry once)
+    # Retry
     __claude_debug "rename: retrying..."
     sleep 1
     output=$(__claude_pty_cmd 15 --resume "$sid" "$@" "/rename $name" 2>/dev/null)
@@ -202,36 +232,34 @@ PYEOF
     rc=$?
     [[ $rc -eq 0 ]] && return 0
 
-    # Both attempts failed or indeterminate
     __claude_debug "rename: FAILED after retry"
     return 1
   }
 
-  # In-directory variant of rename for worktree
-  __claude_rename_in() {
+  # In-directory variant: create + rename for worktree
+  __claude_create_and_rename_in() {
     local dir="$1" sid="$2" name="$3"
     shift 3
-    __claude_debug "rename_in ($dir): resume $sid, name=$name, flags=$*"
+    __claude_debug "create_and_rename_in ($dir): sid=$sid, name=$name, flags=$*"
 
-    # Attempt 1
     local output
-    output=$(cd "$dir" && __claude_pty_cmd 12 --resume "$sid" "$@" "/rename $name" 2>/dev/null)
-    __claude_debug "rename_in output: $(echo "$output" | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' 2>/dev/null)"
+    output=$(cd "$dir" && __claude_pty_cmd 12 --session-id "$sid" "$@" "/rename $name" 2>/dev/null)
+    __claude_debug "create_and_rename_in output: $(echo "$output" | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' 2>/dev/null)"
     (cd "$dir" && __claude_check_rename "$output" "$sid")
     local rc=$?
     [[ $rc -eq 0 ]] && return 0
     [[ $rc -eq 1 ]] && return 1
 
-    # Attempt 2
-    __claude_debug "rename_in: retrying..."
+    # Retry via resume
+    __claude_debug "create_and_rename_in: retrying..."
     sleep 1
     output=$(cd "$dir" && __claude_pty_cmd 15 --resume "$sid" "$@" "/rename $name" 2>/dev/null)
-    __claude_debug "rename_in retry output: $(echo "$output" | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' 2>/dev/null)"
+    __claude_debug "create_and_rename_in retry output: $(echo "$output" | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' 2>/dev/null)"
     (cd "$dir" && __claude_check_rename "$output" "$sid")
     rc=$?
     [[ $rc -eq 0 ]] && return 0
 
-    __claude_debug "rename_in: FAILED after retry"
+    __claude_debug "create_and_rename_in: FAILED after retry"
     return 1
   }
 
@@ -707,8 +735,8 @@ with open(sys.argv[3], 'w') as f:
     ("$CLAUDE_BIN" "${claude_flags[@]}")
     echo ""
     echo "Wrapper options (provided by claude shell function):"
-    echo "  --name <name>                  Create a named session (auto seeds, renames, clears)"
-    echo "  --description <text>           Initial context for the session (requires --name)"
+    echo "  --name <name>                  Create a named session (auto creates and renames)"
+    echo "  --description <text>           Metadata tag for the session (requires --name)"
     echo "  --sessions                     List all named sessions in the current directory"
     echo "  --sessions --with-summary      List sessions including their summaries"
     echo "  --sessions --delete <name>     Delete a named session from the mapping"
@@ -840,9 +868,8 @@ if any(e['name'] == sys.argv[1] for e in data):
     fi
 
     __claude_spin "Forking session from '$resume_value'..."
-    "$CLAUDE_BIN" -p --resume "$resume_value" --fork-session --session-id "$sid" "${claude_flags[@]}" "hi" > /dev/null 2>&1
+    "$CLAUDE_BIN" -p --resume "$resume_value" --fork-session --session-id "$sid" "${claude_flags[@]}" "." > /dev/null 2>&1
     __claude_spin_ok "Forked session from '$resume_value'"
-    sleep 1
 
     __claude_spin "Naming session '$name'..."
     if __claude_rename "$sid" "$name" "${claude_flags[@]}"; then
@@ -883,19 +910,12 @@ if any(e['name'] == sys.argv[1] for e in data):
     local abs_wt_dir=$(cd "$wt_dir" && pwd)
     __claude_spin_ok "Worktree at $abs_wt_dir (branch: $branch_name)"
 
-    local seed_message="${description:-hi}"
-
-    __claude_spin "Seeding session..."
-    (cd "$abs_wt_dir" && "$CLAUDE_BIN" -p --session-id "$sid" "${claude_flags[@]}" "$seed_message") > /dev/null 2>&1
-    __claude_spin_ok "Session seeded"
-    sleep 1
-
-    __claude_spin "Naming session '$name'..."
-    if __claude_rename_in "$abs_wt_dir" "$sid" "$name" "${claude_flags[@]}"; then
-      __claude_spin_ok "Session named '$name'"
+    __claude_spin "Creating and naming session '$name'..."
+    if __claude_create_and_rename_in "$abs_wt_dir" "$sid" "$name" "${claude_flags[@]}"; then
+      __claude_spin_ok "Session '$name' ready"
     else
-      __claude_spin_fail "Failed to rename session to '$name'"
-      echo "Error: rename failed. Resume manually: claude --resume $sid" >&2
+      __claude_spin_fail "Failed to create session '$name'"
+      echo "Error: session creation failed. Try manually: claude --session-id $sid" >&2
       return 1
     fi
 
@@ -955,19 +975,12 @@ with open(sys.argv[6], 'w') as f:
   fi
 
   # === STANDARD PATH ===
-  local seed_message="${description:-hi}"
-
-  __claude_spin "Seeding session..."
-  "$CLAUDE_BIN" -p --session-id "$sid" "${claude_flags[@]}" "$seed_message" > /dev/null 2>&1
-  __claude_spin_ok "Session seeded"
-  sleep 1
-
-  __claude_spin "Naming session '$name'..."
-  if __claude_rename "$sid" "$name" "${claude_flags[@]}"; then
-    __claude_spin_ok "Session named '$name'"
+  __claude_spin "Creating and naming session '$name'..."
+  if __claude_create_and_rename "$sid" "$name" "${claude_flags[@]}"; then
+    __claude_spin_ok "Session '$name' ready"
   else
-    __claude_spin_fail "Failed to rename session to '$name'"
-    echo "Error: rename failed. Resume manually: claude --resume $sid" >&2
+    __claude_spin_fail "Failed to create session '$name'"
+    echo "Error: session creation failed. Try manually: claude --session-id $sid" >&2
     return 1
   fi
 
