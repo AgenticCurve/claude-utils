@@ -714,12 +714,17 @@ with open(sys.argv[3], 'w') as f:
     echo "  --sessions --delete <name>     Delete a named session from the mapping"
     echo "  --summary <name|id>            Generate a summary for a session"
     echo ""
+    echo "Enhancements to native flags:"
+    echo "  --resume <name> -p             Auto-resolves session name to UUID (required by -p)"
+    echo ""
     echo "Examples:"
-    echo "  claude --name my-feature --description \"working on auth\" implement login"
+    echo "  claude --name my-feature --description \"working on auth\""
     echo "  claude --name my-feature -p \"list files\" --model sonnet"
     echo "  claude --name fork-v2 --fork-session --resume my-feature"
     echo "  claude --resume my-feature"
-    echo "  claude --sessions"
+    echo "  claude --resume my-feature -p \"what did we do last time?\""
+    echo "  claude --summary my-feature"
+    echo "  claude --sessions --with-summary"
     return $?
   fi
 
