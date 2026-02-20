@@ -757,7 +757,17 @@ sys.exit(1)
 " "$resume_value" "$mapping_file" 2>/dev/null)
             if [[ $? -eq 0 && -n "$sid_lookup" ]]; then
               resolved_resume="$sid_lookup"
+            else
+              echo "Error: --resume with -p requires a session ID (UUID), but '$resume_value' is not a UUID." >&2
+              echo "Could not find a named session '$resume_value' in ._claude/session_mapping.json to resolve." >&2
+              echo "Use 'claude --sessions' to list available named sessions." >&2
+              return 1
             fi
+          else
+            echo "Error: --resume with -p requires a session ID (UUID), but '$resume_value' is not a UUID." >&2
+            echo "No session mapping found (._claude/session_mapping.json does not exist)." >&2
+            echo "Use 'claude --name <name>' to create a named session first." >&2
+            return 1
           fi
         fi
         passthrough+=("--resume" "$resolved_resume")
