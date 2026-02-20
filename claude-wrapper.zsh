@@ -223,6 +223,8 @@ entry = {
     'description': sys.argv[3] if sys.argv[3] else None,
     'directory': sys.argv[4],
     'created_at': sys.argv[5],
+    'summary': None,
+    'last_summarized_on': None,
     'paths': {
         'transcript': sys.argv[7],
         'debug': os.path.join(claude_dir, 'debug', sid + '.txt'),
@@ -265,6 +267,8 @@ with open(sys.argv[6], 'w') as f:
   local user_has_from_pr=false
   local user_has_sessions=false
   local sessions_delete=""
+  local sessions_with_summary=false
+  local user_has_summary=""
   local user_has_help=false
   local claude_flags=()
   local user_prompt=()
@@ -304,6 +308,14 @@ with open(sys.argv[6], 'w') as f:
         ;;
       --delete)
         sessions_delete="$2"
+        shift 2
+        ;;
+      --with-summary)
+        sessions_with_summary=true
+        shift
+        ;;
+      --summary)
+        user_has_summary="$2"
         shift 2
         ;;
       -p|--print)
@@ -537,10 +549,121 @@ for e in data:
     print(f'    Created:     {e[\"created_at\"]}')
     print(f'    Modified:    {e[\"_modified\"]}')
     print(f'    Transcript:  {exists} {transcript}{note_str}')
+    if sys.argv[2] == '1':
+        summary = e.get('summary') or '-'
+        summarized_on = e.get('last_summarized_on') or 'never'
+        print(f'    Summary:     {summary}')
+        print(f'    Summarized:  {summarized_on}')
     print()
 print('Resume with: claude --resume <name>')
-" "$mapping_file"
+" "$mapping_file" "$([[ "$sessions_with_summary" == true ]] && echo 1 || echo 0)"
     return $?
+  fi
+
+  # --- --summary ---
+  if [[ -n "$user_has_summary" ]]; then
+    local mapping_file="._claude/session_mapping.json"
+    if [[ ! -f "$mapping_file" ]]; then
+      echo "No named sessions found in this directory." >&2
+      return 1
+    fi
+
+    # Look up session by name or ID
+    local lookup_result
+    lookup_result=$(python3 -c "
+import json, sys
+lookup = sys.argv[1]
+with open(sys.argv[2], 'r') as f:
+    data = json.load(f)
+for e in data:
+    if e['name'] == lookup or e['session_id'] == lookup:
+        print(e['session_id'])
+        print(e['name'])
+        sys.exit(0)
+print('not_found', file=sys.stderr)
+sys.exit(1)
+" "$user_has_summary" "$mapping_file" 2>&1)
+    if [[ $? -ne 0 ]]; then
+      echo "Error: no session found matching '$user_has_summary'" >&2
+      return 1
+    fi
+
+    local orig_sid=$(echo "$lookup_result" | sed -n '1p')
+    local orig_name=$(echo "$lookup_result" | sed -n '2p')
+    local temp_sid=$(uuidgen | tr '[:upper:]' '[:lower:]')
+
+    echo ""
+    printf "\033[1mSummarizing session: %s\033[0m\n" "$orig_name"
+    echo ""
+
+    # Fork the session into a temporary one
+    __claude_spin "Forking session for summary..."
+    command claude -p --resume "$orig_sid" --fork-session --session-id "$temp_sid" "${claude_flags[@]}" "hi" > /dev/null 2>&1
+    __claude_spin_ok "Session forked"
+
+    # Ask the fork for a summary
+    __claude_spin "Generating summary..."
+    local summary_output
+    summary_output=$(command claude -p --resume "$temp_sid" "${claude_flags[@]}" \
+      "Give a concise summary (2-4 sentences) of what was done in this session so far. Focus on the key tasks, decisions, and outcomes. Output ONLY the summary text, no formatting or prefixes." 2>/dev/null)
+    __claude_spin_ok "Summary generated"
+
+    # Clean up the temporary fork (all traces)
+    __claude_spin "Cleaning up temporary fork..."
+    local claude_dir="$HOME/.claude"
+    local encoded_path=$(echo "$(pwd)" | tr '/' '-')
+    local temp_transcript="$HOME/.claude/projects/${encoded_path}/${temp_sid}.jsonl"
+    [[ -f "$temp_transcript" ]] && rm -f "$temp_transcript"
+    local temp_subagent="${temp_transcript%.jsonl}"
+    [[ -d "$temp_subagent" ]] && rm -rf "$temp_subagent"
+    rm -f "$claude_dir"/todos/${temp_sid}-agent-*.json
+    rm -f "$claude_dir/debug/${temp_sid}.txt"
+    [[ -d "$claude_dir/file-history/${temp_sid}" ]] && rm -rf "$claude_dir/file-history/${temp_sid}"
+    [[ -d "$claude_dir/session-env/${temp_sid}" ]] && rm -rf "$claude_dir/session-env/${temp_sid}"
+    [[ -d "$claude_dir/tasks/${temp_sid}" ]] && rm -rf "$claude_dir/tasks/${temp_sid}"
+    rm -f "$claude_dir"/telemetry/1p_failed_events.${temp_sid}.*.json
+    # Remove from history.jsonl
+    if [[ -f "$claude_dir/history.jsonl" ]]; then
+      python3 -c "
+import json, sys
+sid = sys.argv[1]
+path = sys.argv[2]
+with open(path, 'r') as f:
+    lines = f.readlines()
+with open(path, 'w') as f:
+    for line in lines:
+        try:
+            d = json.loads(line)
+            if d.get('sessionId') == sid:
+                continue
+        except (json.JSONDecodeError, KeyError):
+            pass
+        f.write(line)
+" "$temp_sid" "$claude_dir/history.jsonl"
+    fi
+    __claude_spin_ok "Temporary fork cleaned up"
+
+    # Update the mapping with the summary
+    python3 -c "
+import json, sys
+from datetime import datetime, timezone
+lookup = sys.argv[1]
+summary = sys.argv[2]
+now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+with open(sys.argv[3], 'r') as f:
+    data = json.load(f)
+for e in data:
+    if e['name'] == lookup or e['session_id'] == lookup:
+        e['summary'] = summary
+        e['last_summarized_on'] = now
+        break
+with open(sys.argv[3], 'w') as f:
+    json.dump(data, f, indent=2)
+" "$user_has_summary" "$summary_output" "$mapping_file"
+
+    echo ""
+    printf "\033[1mSummary:\033[0m %s\n" "$summary_output"
+    return 0
   fi
 
   # --- --help ---
@@ -551,7 +674,9 @@ print('Resume with: claude --resume <name>')
     echo "  --name <name>                  Create a named session (auto seeds, renames, clears)"
     echo "  --description <text>           Initial context for the session (requires --name)"
     echo "  --sessions                     List all named sessions in the current directory"
+    echo "  --sessions --with-summary      List sessions including their summaries"
     echo "  --sessions --delete <name>     Delete a named session from the mapping"
+    echo "  --summary <name|id>            Generate a summary for a session"
     echo ""
     echo "Examples:"
     echo "  claude --name my-feature --description \"working on auth\" implement login"
