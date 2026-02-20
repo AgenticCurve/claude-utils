@@ -499,18 +499,35 @@ with open(path, 'w') as f:
 
     python3 -c "
 import json, sys, os
+from datetime import datetime, timezone
+
 with open(sys.argv[1], 'r') as f:
     data = json.load(f)
 if not data:
     print('No named sessions found.')
     sys.exit(0)
+
+# Get last-modified time from transcript file for each entry
+for e in data:
+    paths = e.get('paths', {})
+    transcript = paths.get('transcript', e.get('transcript', ''))
+    try:
+        mtime = os.path.getmtime(transcript)
+        e['_mtime'] = mtime
+        e['_modified'] = datetime.fromtimestamp(mtime, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    except OSError:
+        e['_mtime'] = 0
+        e['_modified'] = '-'
+
+# Sort by last modified, most recent first
+data.sort(key=lambda e: e['_mtime'], reverse=True)
+
 print(f'Named sessions ({len(data)}):')
 print()
 for e in data:
     desc = e.get('description') or '-'
     note = e.get('note') or ''
     note_str = f' ({note})' if note else ''
-    # Support both old flat 'transcript' and new 'paths' format
     paths = e.get('paths', {})
     transcript = paths.get('transcript', e.get('transcript', ''))
     exists = '\u2713' if os.path.exists(transcript) else '\u2717'
@@ -518,6 +535,7 @@ for e in data:
     print(f'    ID:          {e[\"session_id\"]}')
     print(f'    Description: {desc}')
     print(f'    Created:     {e[\"created_at\"]}')
+    print(f'    Modified:    {e[\"_modified\"]}')
     print(f'    Transcript:  {exists} {transcript}{note_str}')
     print()
 print('Resume with: claude --resume <name>')
