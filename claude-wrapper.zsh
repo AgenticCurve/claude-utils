@@ -265,73 +265,70 @@ with open(sys.argv[6], 'w') as f:
   # Removes setup noise (queue-operation, user, assistant messages) while
   # keeping structural entries (file-history-snapshot, custom-title) that
   # claude needs to recognize and resume the session.
-  # $1=transcript path, $2=session_id, $3=working directory
+  # Clean transcript: keep the first user+assistant exchange (the seed/description)
+  # and structural entries. Remove everything after (rename, clear, exit noise).
+  # $1=transcript path
   __claude_clean_transcript() {
-    local transcript="$1" session_id="$2" work_dir="$3"
+    local transcript="$1"
     [[ ! -f "$transcript" ]] && return 0
-    __claude_debug "clean_transcript: $transcript (sid=$session_id)"
+    __claude_debug "clean_transcript: $transcript"
     python3 -c "
-import json, sys, uuid, datetime
+import json, sys
 
 path = sys.argv[1]
-session_id = sys.argv[2]
-cwd = sys.argv[3]
-keep_types = {'file-history-snapshot', 'custom-title'}
+structural_types = {'file-history-snapshot', 'custom-title'}
 
 with open(path, 'r') as f:
     lines = f.readlines()
 
-# Extract git branch and version from any existing user entry
-git_branch = 'main'
-version = '2.1.19'
-for line in lines:
-    try:
-        e = json.loads(line.strip())
-        if e.get('type') == 'user':
-            if e.get('gitBranch'): git_branch = e['gitBranch']
-            if e.get('version'): version = e['version']
-            break
-    except: pass
-
 kept = []
+seen_first_user = False
+seen_first_assistant = False
+first_user_uuid = None
+
 for line in lines:
     line = line.rstrip('\n')
     if not line:
         continue
     try:
         entry = json.loads(line)
-        if entry.get('type') in keep_types:
+        t = entry.get('type', '')
+
+        # Always keep structural entries
+        if t in structural_types:
             kept.append(line)
+            continue
+
+        # Keep the first queue-operation pair (enqueue + dequeue for the seed)
+        if t == 'queue-operation':
+            if not seen_first_user:
+                kept.append(line)
+            continue
+
+        # Keep the first user message (the seed/description)
+        if t == 'user' and not seen_first_user:
+            seen_first_user = True
+            first_user_uuid = entry.get('uuid')
+            kept.append(line)
+            continue
+
+        # Keep the first assistant response (reply to the seed)
+        if t == 'assistant' and not seen_first_assistant and seen_first_user:
+            seen_first_assistant = True
+            kept.append(line)
+            continue
+
+        # Everything else (rename, clear, exit, further messages) — skip
     except (json.JSONDecodeError, KeyError):
         kept.append(line)
-
-# Inject a minimal synthetic user message so claude recognizes the session
-now = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.000Z')
-msg_uuid = str(uuid.uuid4())
-synthetic = {
-    'type': 'user',
-    'uuid': msg_uuid,
-    'timestamp': now,
-    'sessionId': session_id,
-    'parentUuid': None,
-    'isSidechain': False,
-    'userType': 'external',
-    'cwd': cwd,
-    'version': version,
-    'gitBranch': git_branch,
-    'message': {'role': 'user', 'content': ''},
-    'thinkingMetadata': {},
-    'todos': [],
-}
-kept.append(json.dumps(synthetic, separators=(',', ':')))
 
 with open(path, 'w') as f:
     for line in kept:
         f.write(line + '\n')
 
-removed = len(lines) - len(kept) + 1  # +1 for the injected entry
-print(f'Cleaned transcript: kept {len(kept)} entries, removed {removed}', file=sys.stderr)
-" "$transcript" "$sid" "$(pwd)" 2>/dev/null
+removed = len(lines) - len(kept)
+sys.stderr.write(f'Cleaned transcript: kept {len(kept)}, removed {removed}\n')
+" "$transcript" 2>/dev/null
     __claude_debug "clean_transcript: done"
   }
 
@@ -731,14 +728,12 @@ if any(e['name'] == sys.argv[1] for e in data):
       return 1
     fi
 
-    __claude_spin "Clearing setup context..."
-    __claude_slash "$sid" "/clear" "${claude_flags[@]}"
-    __claude_spin_ok "Context cleared"
-
-    # Surgically remove setup messages from transcript
+    # Clean transcript: keep seed + structural entries, remove rename noise
     local encoded_path=$(echo "$(pwd)" | tr '/' '-')
     local transcript="$HOME/.claude/projects/${encoded_path}/${sid}.jsonl"
-    __claude_clean_transcript "$transcript" "$sid" "$(pwd)"
+    __claude_spin "Cleaning transcript..."
+    __claude_clean_transcript "$transcript"
+    __claude_spin_ok "Transcript cleaned"
 
     __claude_save_mapping "$name" "$sid" "$description" "forked from $resume_value"
     echo ""
@@ -785,14 +780,12 @@ if any(e['name'] == sys.argv[1] for e in data):
       return 1
     fi
 
-    __claude_spin "Clearing setup context..."
-    __claude_slash_in "$abs_wt_dir" "$sid" "/clear" "${claude_flags[@]}"
-    __claude_spin_ok "Context cleared"
-
-    # Surgically remove setup messages from transcript
+    # Clean transcript: keep seed + structural entries, remove rename noise
     local wt_enc=$(echo "$abs_wt_dir" | tr '/' '-')
     local wt_trans="$HOME/.claude/projects/${wt_enc}/${sid}.jsonl"
-    __claude_clean_transcript "$wt_trans" "$sid" "$abs_wt_dir"
+    __claude_spin "Cleaning transcript..."
+    __claude_clean_transcript "$wt_trans"
+    __claude_spin_ok "Transcript cleaned"
 
     # Save mapping in worktree dir
     mkdir -p "$abs_wt_dir/._claude/projects"
@@ -865,14 +858,12 @@ with open(sys.argv[6], 'w') as f:
     return 1
   fi
 
-  __claude_spin "Clearing setup context..."
-  __claude_slash "$sid" "/clear" "${claude_flags[@]}"
-  __claude_spin_ok "Context cleared"
-
-  # Surgically remove setup messages from transcript, keeping structural entries
+  # Clean transcript: keep seed + structural entries, remove rename noise
   local encoded_path=$(echo "$(pwd)" | tr '/' '-')
   local transcript="$HOME/.claude/projects/${encoded_path}/${sid}.jsonl"
-  __claude_clean_transcript "$transcript" "$sid" "$(pwd)"
+  __claude_spin "Cleaning transcript..."
+  __claude_clean_transcript "$transcript"
+  __claude_spin_ok "Transcript cleaned"
 
   __claude_save_mapping "$name" "$sid" "$description"
   echo ""
