@@ -738,7 +738,29 @@ with open(sys.argv[3], 'w') as f:
       if [[ "$resume_value" == "__continue__" ]]; then
         passthrough+=("--continue")
       elif [[ -n "$resume_value" ]]; then
-        passthrough+=("--resume" "$resume_value")
+        local resolved_resume="$resume_value"
+        # When -p is used, claude requires a UUID — resolve name to session ID
+        if [[ "$user_has_print" == true && ! "$resume_value" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+          local mapping_file="._claude/session_mapping.json"
+          if [[ -f "$mapping_file" ]]; then
+            local sid_lookup
+            sid_lookup=$(python3 -c "
+import json, sys
+lookup = sys.argv[1]
+with open(sys.argv[2], 'r') as f:
+    data = json.load(f)
+for e in data:
+    if e['name'] == lookup or e['session_id'] == lookup:
+        print(e['session_id'])
+        sys.exit(0)
+sys.exit(1)
+" "$resume_value" "$mapping_file" 2>/dev/null)
+            if [[ $? -eq 0 && -n "$sid_lookup" ]]; then
+              resolved_resume="$sid_lookup"
+            fi
+          fi
+        fi
+        passthrough+=("--resume" "$resolved_resume")
       else
         passthrough+=("--resume")
       fi
