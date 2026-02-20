@@ -141,15 +141,6 @@ else:
 PYEOF
   }
 
-  # Run a slash command in claude via PTY
-  # $1=sid, $2=slash command, rest=extra flags
-  __claude_slash() {
-    local sid="$1" cmd="$2"
-    shift 2
-    __claude_debug "slash: resume $sid, cmd=$cmd, flags=$*"
-    __claude_pty_cmd 10 --resume "$sid" "$@" "$cmd" > /dev/null 2>&1
-  }
-
   # Run rename via PTY and verify it succeeded
   # $1=sid, $2=name, rest=extra flags
   __claude_rename() {
@@ -190,14 +181,7 @@ PYEOF
     return 0
   }
 
-  # In-directory variants for worktree
-  __claude_slash_in() {
-    local dir="$1" sid="$2" cmd="$3"
-    shift 3
-    __claude_debug "slash_in ($dir): resume $sid, cmd=$cmd, flags=$*"
-    (cd "$dir" && __claude_pty_cmd 10 --resume "$sid" "$@" "$cmd") > /dev/null 2>&1
-  }
-
+  # In-directory variant of rename for worktree
   __claude_rename_in() {
     local dir="$1" sid="$2" name="$3"
     shift 3
@@ -259,77 +243,6 @@ with open(sys.argv[6], 'w') as f:
 " "$name" "$sid" "$description" "$cwd" "$timestamp" "$mapping_file" "$transcript" "$extra_note" "$claude_dir"
 
     ln -sf "$transcript" "._claude/projects/${name}.jsonl"
-  }
-
-  # Surgically clean a transcript .jsonl file after session setup.
-  # Removes setup noise (queue-operation, user, assistant messages) while
-  # keeping structural entries (file-history-snapshot, custom-title) that
-  # claude needs to recognize and resume the session.
-  # Clean transcript: keep the first user+assistant exchange (the seed/description)
-  # and structural entries. Remove everything after (rename, clear, exit noise).
-  # $1=transcript path
-  __claude_clean_transcript() {
-    local transcript="$1"
-    [[ ! -f "$transcript" ]] && return 0
-    __claude_debug "clean_transcript: $transcript"
-    python3 -c "
-import json, sys
-
-path = sys.argv[1]
-structural_types = {'file-history-snapshot', 'custom-title'}
-
-with open(path, 'r') as f:
-    lines = f.readlines()
-
-kept = []
-seen_first_user = False
-seen_first_assistant = False
-first_user_uuid = None
-
-for line in lines:
-    line = line.rstrip('\n')
-    if not line:
-        continue
-    try:
-        entry = json.loads(line)
-        t = entry.get('type', '')
-
-        # Always keep structural entries
-        if t in structural_types:
-            kept.append(line)
-            continue
-
-        # Keep the first queue-operation pair (enqueue + dequeue for the seed)
-        if t == 'queue-operation':
-            if not seen_first_user:
-                kept.append(line)
-            continue
-
-        # Keep the first user message (the seed/description)
-        if t == 'user' and not seen_first_user:
-            seen_first_user = True
-            first_user_uuid = entry.get('uuid')
-            kept.append(line)
-            continue
-
-        # Keep the first assistant response (reply to the seed)
-        if t == 'assistant' and not seen_first_assistant and seen_first_user:
-            seen_first_assistant = True
-            kept.append(line)
-            continue
-
-        # Everything else (rename, clear, exit, further messages) — skip
-    except (json.JSONDecodeError, KeyError):
-        kept.append(line)
-
-with open(path, 'w') as f:
-    for line in kept:
-        f.write(line + '\n')
-
-removed = len(lines) - len(kept)
-sys.stderr.write(f'Cleaned transcript: kept {len(kept)}, removed {removed}\n')
-" "$transcript" 2>/dev/null
-    __claude_debug "clean_transcript: done"
   }
 
   # --- Arg parsing ---
@@ -728,13 +641,6 @@ if any(e['name'] == sys.argv[1] for e in data):
       return 1
     fi
 
-    # Clean transcript: keep seed + structural entries, remove rename noise
-    local encoded_path=$(echo "$(pwd)" | tr '/' '-')
-    local transcript="$HOME/.claude/projects/${encoded_path}/${sid}.jsonl"
-    __claude_spin "Cleaning transcript..."
-    __claude_clean_transcript "$transcript"
-    __claude_spin_ok "Transcript cleaned"
-
     __claude_save_mapping "$name" "$sid" "$description" "forked from $resume_value"
     echo ""
 
@@ -779,13 +685,6 @@ if any(e['name'] == sys.argv[1] for e in data):
       echo "Error: rename failed. Resume manually: claude --resume $sid" >&2
       return 1
     fi
-
-    # Clean transcript: keep seed + structural entries, remove rename noise
-    local wt_enc=$(echo "$abs_wt_dir" | tr '/' '-')
-    local wt_trans="$HOME/.claude/projects/${wt_enc}/${sid}.jsonl"
-    __claude_spin "Cleaning transcript..."
-    __claude_clean_transcript "$wt_trans"
-    __claude_spin_ok "Transcript cleaned"
 
     # Save mapping in worktree dir
     mkdir -p "$abs_wt_dir/._claude/projects"
@@ -857,13 +756,6 @@ with open(sys.argv[6], 'w') as f:
     echo "Error: rename failed. Resume manually: claude --resume $sid" >&2
     return 1
   fi
-
-  # Clean transcript: keep seed + structural entries, remove rename noise
-  local encoded_path=$(echo "$(pwd)" | tr '/' '-')
-  local transcript="$HOME/.claude/projects/${encoded_path}/${sid}.jsonl"
-  __claude_spin "Cleaning transcript..."
-  __claude_clean_transcript "$transcript"
-  __claude_spin_ok "Transcript cleaned"
 
   __claude_save_mapping "$name" "$sid" "$description"
   echo ""
