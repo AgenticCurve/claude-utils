@@ -265,18 +265,33 @@ with open(sys.argv[6], 'w') as f:
   # Removes setup noise (queue-operation, user, assistant messages) while
   # keeping structural entries (file-history-snapshot, custom-title) that
   # claude needs to recognize and resume the session.
+  # $1=transcript path, $2=session_id, $3=working directory
   __claude_clean_transcript() {
-    local transcript="$1"
+    local transcript="$1" session_id="$2" work_dir="$3"
     [[ ! -f "$transcript" ]] && return 0
-    __claude_debug "clean_transcript: $transcript"
+    __claude_debug "clean_transcript: $transcript (sid=$session_id)"
     python3 -c "
-import json, sys
+import json, sys, uuid, datetime
 
 path = sys.argv[1]
+session_id = sys.argv[2]
+cwd = sys.argv[3]
 keep_types = {'file-history-snapshot', 'custom-title'}
 
 with open(path, 'r') as f:
     lines = f.readlines()
+
+# Extract git branch and version from any existing user entry
+git_branch = 'main'
+version = '2.1.19'
+for line in lines:
+    try:
+        e = json.loads(line.strip())
+        if e.get('type') == 'user':
+            if e.get('gitBranch'): git_branch = e['gitBranch']
+            if e.get('version'): version = e['version']
+            break
+    except: pass
 
 kept = []
 for line in lines:
@@ -288,21 +303,35 @@ for line in lines:
         if entry.get('type') in keep_types:
             kept.append(line)
     except (json.JSONDecodeError, KeyError):
-        # Keep unparseable lines to be safe
         kept.append(line)
 
-# Safety: never produce an empty transcript (claude can't resume empty files)
-if not kept:
-    print('No structural entries found, keeping original transcript', file=sys.stderr)
-    sys.exit(0)
+# Inject a minimal synthetic user message so claude recognizes the session
+now = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.000Z')
+msg_uuid = str(uuid.uuid4())
+synthetic = {
+    'type': 'user',
+    'uuid': msg_uuid,
+    'timestamp': now,
+    'sessionId': session_id,
+    'parentUuid': None,
+    'isSidechain': False,
+    'userType': 'external',
+    'cwd': cwd,
+    'version': version,
+    'gitBranch': git_branch,
+    'message': {'role': 'user', 'content': ''},
+    'thinkingMetadata': {},
+    'todos': [],
+}
+kept.append(json.dumps(synthetic, separators=(',', ':')))
 
 with open(path, 'w') as f:
     for line in kept:
         f.write(line + '\n')
 
-removed = len(lines) - len(kept)
-print(f'Kept {len(kept)}, removed {removed}', file=sys.stderr)
-" "$transcript" 2>/dev/null
+removed = len(lines) - len(kept) + 1  # +1 for the injected entry
+print(f'Cleaned transcript: kept {len(kept)} entries, removed {removed}', file=sys.stderr)
+" "$transcript" "$sid" "$(pwd)" 2>/dev/null
     __claude_debug "clean_transcript: done"
   }
 
@@ -709,7 +738,7 @@ if any(e['name'] == sys.argv[1] for e in data):
     # Surgically remove setup messages from transcript
     local encoded_path=$(echo "$(pwd)" | tr '/' '-')
     local transcript="$HOME/.claude/projects/${encoded_path}/${sid}.jsonl"
-    __claude_clean_transcript "$transcript"
+    __claude_clean_transcript "$transcript" "$sid" "$(pwd)"
 
     __claude_save_mapping "$name" "$sid" "$description" "forked from $resume_value"
     echo ""
@@ -763,7 +792,7 @@ if any(e['name'] == sys.argv[1] for e in data):
     # Surgically remove setup messages from transcript
     local wt_enc=$(echo "$abs_wt_dir" | tr '/' '-')
     local wt_trans="$HOME/.claude/projects/${wt_enc}/${sid}.jsonl"
-    __claude_clean_transcript "$wt_trans"
+    __claude_clean_transcript "$wt_trans" "$sid" "$abs_wt_dir"
 
     # Save mapping in worktree dir
     mkdir -p "$abs_wt_dir/._claude/projects"
@@ -843,7 +872,7 @@ with open(sys.argv[6], 'w') as f:
   # Surgically remove setup messages from transcript, keeping structural entries
   local encoded_path=$(echo "$(pwd)" | tr '/' '-')
   local transcript="$HOME/.claude/projects/${encoded_path}/${sid}.jsonl"
-  __claude_clean_transcript "$transcript"
+  __claude_clean_transcript "$transcript" "$sid" "$(pwd)"
 
   __claude_save_mapping "$name" "$sid" "$description"
   echo ""
