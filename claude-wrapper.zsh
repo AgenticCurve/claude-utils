@@ -64,7 +64,7 @@ _claude_wrapper() {
       wait "$__claude_spinner_pid" 2>/dev/null
       __claude_spinner_pid=""
     fi
-    printf "\r\033[0;32m✓\033[0m %s\n" "$msg"
+    printf "\r\033[K\033[0;32m✓\033[0m %s\n" "$msg"
   }
 
   __claude_spin_fail() {
@@ -74,7 +74,7 @@ _claude_wrapper() {
       wait "$__claude_spinner_pid" 2>/dev/null
       __claude_spinner_pid=""
     fi
-    printf "\r\033[0;31m✗\033[0m %s\n" "$msg"
+    printf "\r\033[K\033[0;31m✗\033[0m %s\n" "$msg"
   }
 
   # Run claude in a pseudo-TTY (required for slash commands like /rename, /clear)
