@@ -25,6 +25,10 @@ _claude_wrapper() {
   # Suppress job control notifications for background spinners
   setopt LOCAL_OPTIONS NO_MONITOR
 
+  # Hardcoded path to the real claude binary (avoids infinite loop when
+  # this wrapper is installed as 'claude' on PATH)
+  local CLAUDE_BIN="/opt/homebrew/bin/claude"
+
   # Debug log file — set CLAUDE_WRAPPER_DEBUG=1 to enable
   local debug_log=""
   if [[ -n "$CLAUDE_WRAPPER_DEBUG" ]]; then
@@ -86,16 +90,17 @@ _claude_wrapper() {
     shift
     local cmd_args=("$@")
     __claude_debug "pty_cmd: timeout=$timeout cmd=claude ${cmd_args[*]}"
-    python3 - "$timeout" "${cmd_args[@]}" << 'PYEOF'
+    python3 - "$timeout" "$CLAUDE_BIN" "${cmd_args[@]}" << 'PYEOF'
 import pty, os, sys, signal, time, select
 
 timeout = float(sys.argv[1])
-cmd = ["claude"] + sys.argv[2:]
+claude_bin = sys.argv[2]
+cmd = [claude_bin] + sys.argv[3:]
 
 pid, fd = pty.fork()
 if pid == 0:
     # Child: exec claude
-    os.execvp("claude", cmd)
+    os.execvp(cmd[0], cmd)
     sys.exit(1)
 else:
     # Parent: drain PTY output, then kill after timeout
@@ -598,13 +603,13 @@ sys.exit(1)
 
     # Fork the session into a temporary one
     __claude_spin "Forking session for summary..."
-    command claude -p --resume "$orig_sid" --fork-session --session-id "$temp_sid" "${claude_flags[@]}" "hi" > /dev/null 2>&1
+    "$CLAUDE_BIN" -p --resume "$orig_sid" --fork-session --session-id "$temp_sid" "${claude_flags[@]}" "hi" > /dev/null 2>&1
     __claude_spin_ok "Session forked"
 
     # Ask the fork for a summary
     __claude_spin "Generating summary..."
     local summary_output
-    summary_output=$(command claude -p --resume "$temp_sid" "${claude_flags[@]}" \
+    summary_output=$("$CLAUDE_BIN" -p --resume "$temp_sid" "${claude_flags[@]}" \
       "Give a concise summary (2-4 sentences) of what was done in this session so far. Focus on the key tasks, decisions, and outcomes. Output ONLY the summary text, no formatting or prefixes." 2>/dev/null)
     __claude_spin_ok "Summary generated"
 
@@ -668,7 +673,7 @@ with open(sys.argv[3], 'w') as f:
 
   # --- --help ---
   if [[ "$user_has_help" == true && -z "$name" ]]; then
-    (command claude "${claude_flags[@]}")
+    ("$CLAUDE_BIN" "${claude_flags[@]}")
     echo ""
     echo "Wrapper options (provided by claude shell function):"
     echo "  --name <name>                  Create a named session (auto seeds, renames, clears)"
@@ -721,7 +726,7 @@ with open(sys.argv[3], 'w') as f:
         passthrough+=("--tmux")
       fi
     fi
-    command claude "${passthrough[@]}" "${claude_flags[@]}" "${user_prompt[@]}"
+    "$CLAUDE_BIN" "${passthrough[@]}" "${claude_flags[@]}" "${user_prompt[@]}"
     return $?
   fi
 
@@ -772,7 +777,7 @@ if any(e['name'] == sys.argv[1] for e in data):
     fi
 
     __claude_spin "Forking session from '$resume_value'..."
-    command claude -p --resume "$resume_value" --fork-session --session-id "$sid" "${claude_flags[@]}" "hi" > /dev/null 2>&1
+    "$CLAUDE_BIN" -p --resume "$resume_value" --fork-session --session-id "$sid" "${claude_flags[@]}" "hi" > /dev/null 2>&1
     __claude_spin_ok "Forked session from '$resume_value'"
 
     __claude_spin "Naming session '$name'..."
@@ -788,9 +793,9 @@ if any(e['name'] == sys.argv[1] for e in data):
     echo ""
 
     if [[ "$user_has_print" == true ]]; then
-      command claude -p --resume "$sid" "${claude_flags[@]}" "${user_prompt[@]}"
+      "$CLAUDE_BIN" -p --resume "$sid" "${claude_flags[@]}" "${user_prompt[@]}"
     else
-      command claude --resume "$sid" "${claude_flags[@]}" "${user_prompt[@]}"
+      "$CLAUDE_BIN" --resume "$sid" "${claude_flags[@]}" "${user_prompt[@]}"
     fi
     return $?
   fi
@@ -817,7 +822,7 @@ if any(e['name'] == sys.argv[1] for e in data):
     local seed_message="${description:-hi}"
 
     __claude_spin "Seeding session..."
-    (cd "$abs_wt_dir" && command claude -p --session-id "$sid" "${claude_flags[@]}" "$seed_message") > /dev/null 2>&1
+    (cd "$abs_wt_dir" && "$CLAUDE_BIN" -p --session-id "$sid" "${claude_flags[@]}" "$seed_message") > /dev/null 2>&1
     __claude_spin_ok "Session seeded"
 
     __claude_spin "Naming session '$name'..."
@@ -871,15 +876,15 @@ with open(sys.argv[6], 'w') as f:
       local tmux_session="claude-${name}"
       if [[ -n "$tmux_value" && "$tmux_value" == "classic" ]]; then
         tmux new-session -d -s "$tmux_session" -c "$abs_wt_dir"
-        tmux send-keys -t "$tmux_session" "command claude --resume \"$sid\" ${(q)claude_flags[*]} ${(q)user_prompt[*]}" Enter
+        tmux send-keys -t "$tmux_session" "$CLAUDE_BIN --resume \"$sid\" ${(q)claude_flags[*]} ${(q)user_prompt[*]}" Enter
         tmux attach -t "$tmux_session"
       else
-        (cd "$abs_wt_dir" && command claude --resume "$sid" "${claude_flags[@]}" "${user_prompt[@]}")
+        (cd "$abs_wt_dir" && "$CLAUDE_BIN" --resume "$sid" "${claude_flags[@]}" "${user_prompt[@]}")
       fi
     elif [[ "$user_has_print" == true ]]; then
-      (cd "$abs_wt_dir" && command claude -p --resume "$sid" "${claude_flags[@]}" "${user_prompt[@]}")
+      (cd "$abs_wt_dir" && "$CLAUDE_BIN" -p --resume "$sid" "${claude_flags[@]}" "${user_prompt[@]}")
     else
-      (cd "$abs_wt_dir" && command claude --resume "$sid" "${claude_flags[@]}" "${user_prompt[@]}")
+      (cd "$abs_wt_dir" && "$CLAUDE_BIN" --resume "$sid" "${claude_flags[@]}" "${user_prompt[@]}")
     fi
     return $?
   fi
@@ -888,7 +893,7 @@ with open(sys.argv[6], 'w') as f:
   local seed_message="${description:-hi}"
 
   __claude_spin "Seeding session..."
-  command claude -p --session-id "$sid" "${claude_flags[@]}" "$seed_message" > /dev/null 2>&1
+  "$CLAUDE_BIN" -p --session-id "$sid" "${claude_flags[@]}" "$seed_message" > /dev/null 2>&1
   __claude_spin_ok "Session seeded"
 
   __claude_spin "Naming session '$name'..."
@@ -904,8 +909,8 @@ with open(sys.argv[6], 'w') as f:
   echo ""
 
   if [[ "$user_has_print" == true ]]; then
-    command claude -p --resume "$sid" "${claude_flags[@]}" "${user_prompt[@]}"
+    "$CLAUDE_BIN" -p --resume "$sid" "${claude_flags[@]}" "${user_prompt[@]}"
   else
-    command claude --resume "$sid" "${claude_flags[@]}" "${user_prompt[@]}"
+    "$CLAUDE_BIN" --resume "$sid" "${claude_flags[@]}" "${user_prompt[@]}"
   fi
 }
